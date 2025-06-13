@@ -28,6 +28,9 @@ macro_rules! setup_interned_struct {
         // the salsa ID
         id: $Id:path,
 
+        // The minimum number of revisions to keep the value interned.
+        revisions: $($revisions:expr)?,
+
         // the lifetime used in the desugared interned struct.
         // if the `db_lt_arg`, is present, this is `db_lt_arg`, but otherwise,
         // it is `'static`.
@@ -53,6 +56,9 @@ macro_rules! setup_interned_struct {
 
         // Indexed types for each field (T0, T1, ...)
         field_indexed_tys: [$($indexed_ty:ident),*],
+
+        // Attrs for each field.
+        field_attrs: [$([$(#[$field_attr:meta]),*]),*],
 
         // Number of fields
         num_fields: $N:literal,
@@ -126,6 +132,9 @@ macro_rules! setup_interned_struct {
                     line: line!(),
                 };
                 const DEBUG_NAME: &'static str = stringify!($Struct);
+                $(
+                    const REVISIONS: ::core::num::NonZeroUsize = ::core::num::NonZeroUsize::new($revisions).unwrap();
+                )?
                 type Fields<'a> = $StructDataIdent<'a>;
                 type Struct<'db> = $Struct< $($db_lt_arg)? >;
             }
@@ -211,6 +220,7 @@ macro_rules! setup_interned_struct {
                 }
 
                 $(
+                    $(#[$field_attr])*
                     $field_getter_vis fn $field_getter_id<$Db>(self, db: &'db $Db) -> $zalsa::return_mode_ty!($field_option, 'db, $field_ty)
                     where
                         // FIXME(rust-lang/rust#65991): The `db` argument *should* have the type `dyn Database`
