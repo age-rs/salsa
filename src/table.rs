@@ -30,7 +30,11 @@ pub struct Table {
     non_full_pages: Mutex<FxHashMap<IngredientIndex, Vec<PageIndex>>>,
 }
 
-pub(crate) trait Slot: Any + Send + Sync {
+/// # Safety
+///
+/// Implementors of this trait need to make sure that their type is unique with respect to
+/// their owning ingredient as the allocation strategy relies on this.
+pub(crate) unsafe trait Slot: Any + Send + Sync {
     /// Access the [`MemoTable`][] for this slot.
     ///
     /// # Safety condition
@@ -377,7 +381,7 @@ impl Page {
     }
 
     #[inline]
-    fn assert_type<T: Slot>(&self) -> PageView<T> {
+    fn assert_type<T: Slot>(&self) -> PageView<'_, T> {
         assert_eq!(
             self.slot_type_id,
             TypeId::of::<T>(),
@@ -388,7 +392,7 @@ impl Page {
         PageView(self, PhantomData)
     }
 
-    fn cast_type<T: Slot>(&self) -> Option<PageView<T>> {
+    fn cast_type<T: Slot>(&self) -> Option<PageView<'_, T>> {
         if self.slot_type_id == TypeId::of::<T>() {
             Some(PageView(self, PhantomData))
         } else {

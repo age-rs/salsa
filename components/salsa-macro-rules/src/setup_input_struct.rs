@@ -32,6 +32,9 @@ macro_rules! setup_input_struct {
         // Indices for each field from 0..N -- must be unsuffixed (e.g., `0`, `1`).
         field_indices: [$($field_index:tt),*],
 
+        // Attributes for each field
+        field_attrs: [$([$(#[$field_attr:meta]),*]),*],
+
         // Fields that are required (have no default value). Each item is the fields name and type.
         required_fields: [$($required_field_id:ident $required_field_ty:ty),*],
 
@@ -80,14 +83,12 @@ macro_rules! setup_input_struct {
                 const FIELD_DEBUG_NAMES: &'static [&'static str] = &[$(stringify!($field_id)),*];
                 type Singleton = $zalsa::macro_if! {if $is_singleton {$zalsa::input::Singleton} else {$zalsa::input::NotSingleton}};
 
-                /// The input struct (which wraps an `Id`)
                 type Struct = $Struct;
 
-                /// A (possibly empty) tuple of the fields for this struct.
                 type Fields = ($($field_ty,)*);
 
-                /// A array of [`StampedValue<()>`](`StampedValue`) tuples, one per each of the value fields.
-                type Stamps = [$zalsa::Stamp; $N];
+                type Revisions = [$zalsa::Revision; $N];
+                type Durabilities = [$zalsa::Durability; $N];
             }
 
             impl $Configuration {
@@ -178,6 +179,7 @@ macro_rules! setup_input_struct {
                 }
 
                 $(
+                    $(#[$field_attr])*
                     $field_getter_vis fn $field_getter_id<'db, $Db>(self, db: &'db $Db) -> $zalsa::return_mode_ty!($field_option, 'db, $field_ty)
                     where
                         // FIXME(rust-lang/rust#65991): The `db` argument *should* have the type `dyn Database`
@@ -198,7 +200,7 @@ macro_rules! setup_input_struct {
 
                 $(
                     #[must_use]
-                    $field_setter_vis fn $field_setter_id<'db, $Db>(self, db: &'db mut $Db) -> impl salsa::Setter<FieldTy = $field_ty> + 'db
+                    $field_setter_vis fn $field_setter_id<'db, $Db>(self, db: &'db mut $Db) -> impl salsa::Setter<FieldTy = $field_ty> + use<'db, $Db>
                     where
                         // FIXME(rust-lang/rust#65991): The `db` argument *should* have the type `dyn Database`
                         $Db: ?Sized + $zalsa::Database,
@@ -274,8 +276,8 @@ macro_rules! setup_input_struct {
                     let zalsa = db.zalsa();
                     let current_revision = zalsa.current_revision();
                     let ingredient = $Configuration::ingredient_(zalsa);
-                    let (fields, stamps) = builder::builder_into_inner(self, current_revision);
-                    ingredient.new_input(db.as_dyn_database(), fields, stamps)
+                    let (fields, revision, durabilities) = builder::builder_into_inner(self, current_revision);
+                    ingredient.new_input(db.as_dyn_database(), fields, revision, durabilities)
                 }
             }
 
@@ -294,10 +296,8 @@ macro_rules! setup_input_struct {
                     }
                 }
 
-                pub(super) fn builder_into_inner(builder: $Builder, revision: $zalsa::Revision) -> (($($field_ty,)*), [$zalsa::Stamp; $N]) {
-                    let stamps = [$($zalsa::stamp(revision, builder.durabilities[$field_index])),*];
-
-                    (builder.fields, stamps)
+                pub(super) fn builder_into_inner(builder: $Builder, revision: $zalsa::Revision) -> (($($field_ty,)*), [$zalsa::Revision; $N], [$zalsa::Durability; $N]) {
+                    (builder.fields, [revision; $N], [$(builder.durabilities[$field_index]),*])
                 }
 
                 #[must_use]

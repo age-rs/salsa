@@ -50,6 +50,12 @@ macro_rules! setup_tracked_struct {
         // Absolute indices of any untracked fields.
         absolute_untracked_indices: [$($absolute_untracked_index:tt),*],
 
+        // Tracked field types.
+        tracked_maybe_updates: [$($tracked_maybe_update:tt),*],
+
+        // Untracked field types.
+        untracked_maybe_updates: [$($untracked_maybe_update:tt),*],
+
         // A set of "field options" for each tracked field.
         //
         // Each field option is a tuple `(return_mode, maybe_backdate)` where:
@@ -71,6 +77,10 @@ macro_rules! setup_tracked_struct {
         // These are used to drive conditional logic for each field via recursive macro invocation
         // (see e.g. @return_mode below).
         untracked_options: [$($untracked_option:tt),*],
+
+        // Attrs for each field.
+        tracked_field_attrs: [$([$(#[$tracked_field_attr:meta]),*]),*],
+        untracked_field_attrs: [$([$(#[$untracked_field_attr:meta]),*]),*],
 
         // Number of tracked fields.
         num_tracked_fields: $N:literal,
@@ -146,7 +156,7 @@ macro_rules! setup_tracked_struct {
                         $(
                             $crate::maybe_backdate!(
                                 $tracked_option,
-                                $tracked_ty,
+                                $tracked_maybe_update,
                                 (*old_fields).$absolute_tracked_index,
                                 new_fields.$absolute_tracked_index,
                                 revisions[$relative_tracked_index],
@@ -158,7 +168,7 @@ macro_rules! setup_tracked_struct {
                         // If any untracked field has changed, return `true`, indicating that the tracked struct
                         // itself should be considered changed.
                         $(
-                            $zalsa::UpdateDispatch::<$untracked_ty>::maybe_update(
+                            $untracked_maybe_update(
                                 &mut (*old_fields).$absolute_untracked_index,
                                 new_fields.$absolute_untracked_index,
                             )
@@ -256,6 +266,7 @@ macro_rules! setup_tracked_struct {
                 }
 
                 $(
+                    $(#[$tracked_field_attr])*
                     $tracked_getter_vis fn $tracked_getter_id<$Db>(self, db: &$db_lt $Db) -> $crate::return_mode_ty!($tracked_option, $db_lt, $tracked_ty)
                     where
                         // FIXME(rust-lang/rust#65991): The `db` argument *should* have the type `dyn Database`
@@ -272,6 +283,7 @@ macro_rules! setup_tracked_struct {
                 )*
 
                 $(
+                    $(#[$untracked_field_attr])*
                     $untracked_getter_vis fn $untracked_getter_id<$Db>(self, db: &$db_lt $Db) -> $crate::return_mode_ty!($untracked_option, $db_lt, $untracked_ty)
                     where
                         // FIXME(rust-lang/rust#65991): The `db` argument *should* have the type `dyn Database`
