@@ -17,7 +17,7 @@ use crate::ingredient::{Ingredient, Jar};
 use crate::key::DatabaseKeyIndex;
 use crate::plumbing::ZalsaLocal;
 use crate::revision::OptionalAtomicRevision;
-use crate::runtime::StampedValue;
+use crate::runtime::Stamp;
 use crate::salsa_struct::SalsaStructInDb;
 use crate::sync::Arc;
 use crate::table::memo::{MemoTable, MemoTableTypes, MemoTableWithTypesMut};
@@ -29,6 +29,7 @@ pub mod tracked_field;
 
 // ANCHOR: Configuration
 /// Trait that defines the key properties of a tracked struct.
+///
 /// Implemented by the `#[salsa::tracked]` macro when applied
 /// to a struct.
 pub trait Configuration: Sized + 'static {
@@ -146,10 +147,14 @@ pub trait TrackedStructInDb: SalsaStructInDb {
 /// This ingredient only stores the "id" fields. It is a kind of "dressed up" interner;
 /// the active query + values of id fields are hashed to create the tracked
 /// struct id. The value fields are stored in [`crate::function::IngredientImpl`]
-/// instances keyed by the tracked struct id. Unlike normal interners, tracked
-/// struct indices can be deleted and reused aggressively: when a tracked
-/// function re-executes, any tracked structs that it created before but did
-/// not create this time can be deleted.
+/// instances keyed by the tracked struct id.
+///
+/// Unlike normal interned values, tracked struct indices can be deleted and reused aggressively
+/// without dependency edges on the creating query. When a tracked function is collected,
+/// any tracked structs it created can be deleted. Additionally, when a tracked function
+/// re-executes but does not create a tracked struct that was previously created, it can
+/// be deleted. No dependency edge is required as the lifetime of a tracked struct is tied
+/// directly to the query that created it.
 pub struct IngredientImpl<C>
 where
     C: Configuration,
@@ -430,7 +435,7 @@ where
         zalsa: &'db Zalsa,
         zalsa_local: &'db ZalsaLocal,
         current_revision: Revision,
-        current_deps: &StampedValue<()>,
+        current_deps: &Stamp,
         fields: C::Fields<'db>,
     ) -> Id {
         let value = |_| Value {
@@ -491,7 +496,7 @@ where
         zalsa: &'db Zalsa,
         current_revision: Revision,
         mut id: Id,
-        current_deps: &StampedValue<()>,
+        current_deps: &Stamp,
         fields: C::Fields<'db>,
     ) -> Result<Id, C::Fields<'db>> {
         let data_raw = Self::data_raw(zalsa.table(), id);
@@ -847,6 +852,18 @@ where
     fn memo_table_types(&self) -> Arc<MemoTableTypes> {
         self.memo_table_types.clone()
     }
+
+    /// Returns memory usage information about any tracked structs.
+    #[cfg(feature = "salsa_unstable")]
+    fn memory_usage(&self, db: &dyn Database) -> Option<Vec<crate::SlotInfo>> {
+        let memory_usage = self
+            .entries(db)
+            // SAFETY: The memo table belongs to a value that we allocated, so it
+            // has the correct type.
+            .map(|value| unsafe { value.memory_usage(&self.memo_table_types) })
+            .collect();
+        Some(memory_usage)
+    }
 }
 
 impl<C> std::fmt::Debug for IngredientImpl<C>
@@ -905,9 +922,28 @@ where
             }
         }
     }
+
+    /// Returns memory usage information about the tracked struct.
+    ///
+    /// # Safety
+    ///
+    /// The `MemoTable` must belong to a `Value` of the correct type.
+    #[cfg(feature = "salsa_unstable")]
+    unsafe fn memory_usage(&self, memo_table_types: &MemoTableTypes) -> crate::SlotInfo {
+        // SAFETY: The caller guarantees this is the correct types table.
+        let memos = unsafe { memo_table_types.attach_memos(&self.memos) };
+
+        crate::SlotInfo {
+            debug_name: C::DEBUG_NAME,
+            size_of_metadata: mem::size_of::<Self>() - mem::size_of::<C::Fields<'_>>(),
+            size_of_fields: mem::size_of::<C::Fields<'_>>(),
+            memos: memos.memory_usage(),
+        }
+    }
 }
 
-impl<C> Slot for Value<C>
+// SAFETY: `Value<C>` is our private type branded over the unique configuration `C`.
+unsafe impl<C> Slot for Value<C>
 where
     C: Configuration,
 {

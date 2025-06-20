@@ -1,10 +1,9 @@
-use std::{
-    any::{Any, TypeId},
-    fmt::Debug,
-    mem,
-    ptr::{self, NonNull},
-};
+use std::any::{Any, TypeId};
+use std::fmt::Debug;
+use std::mem;
+use std::ptr::{self, NonNull};
 
+use portable_atomic::hint::spin_loop;
 use thin_vec::ThinVec;
 
 use crate::sync::atomic::{AtomicPtr, Ordering};
@@ -22,6 +21,10 @@ pub(crate) struct MemoTable {
 pub trait Memo: Any + Send + Sync {
     /// Returns the `origin` of this memo
     fn origin(&self) -> QueryOriginRef<'_>;
+
+    /// Returns memory usage information about the memoized value.
+    #[cfg(feature = "salsa_unstable")]
+    fn memory_usage(&self) -> crate::SlotInfo;
 }
 
 /// Data for a memoized entry.
@@ -47,11 +50,12 @@ struct MemoEntry {
     atomic_memo: AtomicPtr<DummyMemo>,
 }
 
+#[derive(Default)]
 pub struct MemoEntryType {
     data: OnceLock<MemoEntryTypeData>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct MemoEntryTypeData {
     /// The `type_id` of the erased memo type `M`
     type_id: TypeId,
@@ -100,11 +104,21 @@ impl MemoEntryType {
 
 /// Dummy placeholder type that we use when erasing the memo type `M` in [`MemoEntryData`][].
 #[derive(Debug)]
-struct DummyMemo {}
+struct DummyMemo;
 
 impl Memo for DummyMemo {
     fn origin(&self) -> QueryOriginRef<'_> {
         unreachable!("should not get here")
+    }
+
+    #[cfg(feature = "salsa_unstable")]
+    fn memory_usage(&self) -> crate::SlotInfo {
+        crate::SlotInfo {
+            debug_name: "dummy",
+            size_of_metadata: 0,
+            size_of_fields: 0,
+            memos: Vec::new(),
+        }
     }
 }
 
@@ -120,29 +134,40 @@ impl MemoTableTypes {
         memo_type: &MemoEntryType,
     ) {
         let memo_ingredient_index = memo_ingredient_index.as_usize();
-        while memo_ingredient_index >= self.types.count() {
-            self.types.push(MemoEntryType {
-                data: OnceLock::new(),
-            });
+
+        // Try to create our entry if it has not already been created.
+        if memo_ingredient_index >= self.types.count() {
+            while self.types.push(MemoEntryType::default()) < memo_ingredient_index {}
         }
-        let memo_entry_type = self.types.get(memo_ingredient_index).unwrap();
-        memo_entry_type
-            .data
-            .set(
-                *memo_type
-                    .data
-                    .get()
-                    .expect("cannot provide an empty `MemoEntryType` for `MemoEntryType::set()`"),
-            )
-            .ok()
-            .expect("memo type should only be set once");
+
+        loop {
+            let Some(memo_entry_type) = self.types.get(memo_ingredient_index) else {
+                // It's possible that someone else began pushing to our index but has not
+                // completed the entry's initialization yet, as `boxcar` is lock-free. This
+                // is extremely unlikely given initialization is just a handful of instructions.
+                // Additionally, this function is generally only called on startup, so we can
+                // just spin here.
+                spin_loop();
+                continue;
+            };
+
+            memo_entry_type
+                .data
+                .set(
+                    *memo_type.data.get().expect(
+                        "cannot provide an empty `MemoEntryType` for `MemoEntryType::set()`",
+                    ),
+                )
+                .expect("memo type should only be set once");
+            break;
+        }
     }
 
     /// # Safety
     ///
     /// The types table must be the correct one of `memos`.
     #[inline]
-    pub(super) unsafe fn attach_memos<'a>(
+    pub(crate) unsafe fn attach_memos<'a>(
         &'a self,
         memos: &'a MemoTable,
     ) -> MemoTableWithTypes<'a> {
@@ -251,6 +276,27 @@ impl MemoTableWithTypes<'_> {
         let memo = NonNull::new(memo.atomic_memo.load(Ordering::Acquire))?;
         // SAFETY: `type_id` check asserted above
         Some(unsafe { MemoEntryType::from_dummy(memo) })
+    }
+
+    #[cfg(feature = "salsa_unstable")]
+    pub(crate) fn memory_usage(&self) -> Vec<crate::SlotInfo> {
+        let mut memory_usage = Vec::new();
+        let memos = self.memos.memos.read();
+        for (index, memo) in memos.iter().enumerate() {
+            let Some(memo) = NonNull::new(memo.atomic_memo.load(Ordering::Acquire)) else {
+                continue;
+            };
+
+            let Some(type_) = self.types.types.get(index).and_then(MemoEntryType::load) else {
+                continue;
+            };
+
+            // SAFETY: The `TypeId` is asserted in `insert()`.
+            let dyn_memo: &dyn Memo = unsafe { (type_.to_dyn_fn)(memo).as_ref() };
+            memory_usage.push(dyn_memo.memory_usage());
+        }
+
+        memory_usage
     }
 }
 

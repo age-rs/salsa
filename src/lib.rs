@@ -39,10 +39,13 @@ pub use parallel::{join, par_map};
 #[cfg(feature = "macros")]
 pub use salsa_macros::{accumulator, db, input, interned, tracked, Supertype, Update};
 
+#[cfg(feature = "salsa_unstable")]
+pub use self::database::{IngredientInfo, SlotInfo};
+
 pub use self::accumulator::Accumulator;
 pub use self::active_query::Backtrace;
 pub use self::cancelled::Cancelled;
-pub use self::cycle::{CycleRecoveryAction, UnexpectedCycle};
+pub use self::cycle::CycleRecoveryAction;
 pub use self::database::{AsDynDatabase, Database};
 pub use self::database_impl::DatabaseImpl;
 pub use self::durability::Durability;
@@ -84,6 +87,7 @@ pub mod plumbing {
     pub use crate::attach::{attach, with_attached_database};
     pub use crate::cycle::{CycleRecoveryAction, CycleRecoveryStrategy};
     pub use crate::database::{current_revision, Database};
+    pub use crate::durability::Durability;
     pub use crate::id::{AsId, FromId, FromIdWithDb, Id};
     pub use crate::ingredient::{Ingredient, Jar, Location};
     pub use crate::key::DatabaseKeyIndex;
@@ -92,7 +96,7 @@ pub mod plumbing {
         NewMemoIngredientIndices,
     };
     pub use crate::revision::Revision;
-    pub use crate::runtime::{stamp, Runtime, Stamp, StampedValue};
+    pub use crate::runtime::{stamp, Runtime, Stamp};
     pub use crate::salsa_struct::SalsaStructInDb;
     pub use crate::storage::{HasStorage, Storage};
     pub use crate::tracked_struct::TrackedStructInDb;

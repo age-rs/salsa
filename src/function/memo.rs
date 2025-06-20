@@ -286,7 +286,7 @@ impl<V> Memo<V> {
         }
     }
 
-    pub(super) fn tracing_debug(&self) -> impl std::fmt::Debug + '_ {
+    pub(super) fn tracing_debug(&self) -> impl std::fmt::Debug + use<'_, V> {
         struct TracingDebug<'a, T> {
             memo: &'a Memo<T>,
         }
@@ -315,6 +315,18 @@ impl<V> Memo<V> {
 impl<V: Send + Sync + Any> crate::table::memo::Memo for Memo<V> {
     fn origin(&self) -> QueryOriginRef<'_> {
         self.revisions.origin.as_ref()
+    }
+
+    #[cfg(feature = "salsa_unstable")]
+    fn memory_usage(&self) -> crate::SlotInfo {
+        let size_of = std::mem::size_of::<Memo<V>>() + self.revisions.allocation_size();
+
+        crate::SlotInfo {
+            size_of_metadata: size_of - std::mem::size_of::<V>(),
+            debug_name: std::any::type_name::<V>(),
+            size_of_fields: std::mem::size_of::<V>(),
+            memos: Vec::new(),
+        }
     }
 }
 
